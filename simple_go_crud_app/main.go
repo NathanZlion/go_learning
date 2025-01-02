@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
+	"io"
 	"net/http"
+	"os"
 	"sync"
+	"text/template"
+
+	"github.com/google/uuid"
 )
 
 // Errors
@@ -201,6 +205,72 @@ func deleteTodoById(w http.ResponseWriter, r *http.Request) {
 	delete(todosDb.todos, id)
 
 	w.WriteHeader(http.StatusNoContent)
+
+}
+
+// Compile templates on start of the application
+var templates = template.Must(template.ParseFiles("public/upload.html"))
+
+const fileUploadFolder = "files"
+
+func createFileUploadDir(fileUploadFolder string) {
+	err := os.MkdirAll(fileUploadFolder, 0755)
+	if err != nil {
+		fmt.Println("[-] Error creating directory:", err)
+	}
+}
+
+func handleGetFile(w http.ResponseWriter, r *http.Request) {
+	templates.ExecuteTemplate(w, "upload.html", nil)
+}
+
+func handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	const TENMB = 10 << 20
+
+	// Max upload size limit 10 mb files
+	r.ParseMultipartForm(TENMB)
+
+	file, header, err := r.FormFile("myFile")
+	if err != nil {
+		http.Error(
+			w,
+			ErrInternalServerError.Error(),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	defer file.Close()
+	fmt.Println("[-] Uploaded File Name", header.Filename)
+	fmt.Println("[-] Uploaded File Size", header.Size)
+	fmt.Println("[-] Uploaded File Mime Header", header.Header)
+
+	// create the file
+	dst, err := os.Create(fmt.Sprintf("%v/%v", fileUploadFolder, header.Filename))
+	defer dst.Close()
+
+	if err != nil {
+		fmt.Println("[-] Error in File Creation %v", err.Error())
+		http.Error(
+			w,
+			ErrInternalServerError.Error(),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	if _, err := io.Copy(dst, file); err != nil {
+		fmt.Println("[-] Error in Copying File form src to dst %v", err.Error())
+		http.Error(
+			w,
+			ErrInternalServerError.Error(),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	fmt.Println("File uploaded successfully")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type TodosDB struct {
@@ -216,6 +286,8 @@ func main() {
 	}
 	mux := http.NewServeMux()
 
+	createFileUploadDir(fileUploadFolder)
+
 	// Add handlers
 	mux.HandleFunc("GET /health-check", healthCheck)
 	mux.HandleFunc("GET /todos", getTodos)
@@ -223,6 +295,10 @@ func main() {
 	mux.HandleFunc("GET /todos/{id}", getTodoById)
 	mux.HandleFunc("PATCH /todos/{id}", patchTodoById)
 	mux.HandleFunc("DELETE /todos/{id}", deleteTodoById)
+
+	// File Uplaod
+	mux.HandleFunc("GET /file", handleGetFile)
+	mux.HandleFunc("POST /file", handleFileUpload)
 
 	// Start the server
 	fmt.Println("Started server at :8080 ...")
